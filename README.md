@@ -43,7 +43,7 @@ Ensure your S3 bucket has the correct policies for public read access.
 Deployed Version
 The backend is deployed and hosted on AWS EC2 with HTTPS enabled. You can access the deployed backend via the following URL:
 
-https://blogger.ananthuks.online
+https://blogger-backend.ananthuks.online
 
 Running Tests
 To run tests for the backend, you can use the following command:
