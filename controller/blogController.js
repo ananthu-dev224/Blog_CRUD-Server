@@ -1,20 +1,8 @@
 const blogModel = require("../model/blogModel");
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 require("dotenv").config();
-const { v4: uuidv4 } = require("uuid");
-const path = require("path");
-const bucketName = process.env.BUCKET_NAME;
-const bucketRegion = process.env.BUCKET_REGION;
-const awsAccess = process.env.AWS_ACCESS_KEY;
-const awsSecret = process.env.AWS_SECRET_KEY;
-
-const s3 = new S3Client({
-  credentials: {
-    accessKeyId: awsAccess,
-    secretAccessKey: awsSecret,
-  },
-  region: bucketRegion,
-});
+const createFilename = require("../utils/generateUniqueFilename")
+const {addToS3,deleteFromS3} = require("../utils/manageS3")
+const ResponseEnum = require("../utils/enums/responseEnum");
 
 const createBlog = async (req, res) => {
   try {
@@ -23,17 +11,8 @@ const createBlog = async (req, res) => {
     let imageUrl;
 
     if (req.file) {
-      const uniqueFilename = uuidv4() + path.extname(req.file.originalname); // Create unique filename
-      const params = {
-        Bucket: bucketName,
-        Key: uniqueFilename,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-      };
-
-      const command = new PutObjectCommand(params);
-      await s3.send(command); // Upload file to S3
-      imageUrl = `https://${bucketName}.s3.${bucketRegion}.amazonaws.com/${uniqueFilename}`;
+      const uniqueFilename = createFilename(req.file.originalname) // Create unique filename
+      imageUrl = await addToS3(uniqueFilename,req.file.buffer,req.file.mimetype)
     }
 
     const newBlog = new blogModel({
@@ -45,14 +24,13 @@ const createBlog = async (req, res) => {
 
     await newBlog.save();
 
-    res.status(201).json({
-      status: "success",
-      message: "Blog created successfully",
+    res.status(ResponseEnum.SUCCESS.BLOG_CREATED.statusCode).json({
+      ...ResponseEnum.SUCCESS.BLOG_CREATED,
       data: newBlog,
     });
   } catch (error) {
     console.error("Error creating blog:", error);
-    res.status(500).json({ message: error.message, status: "error" });
+    res.status(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR.statusCode).json(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR);
   }
 };
 
@@ -60,10 +38,10 @@ const allBlogs = async (req, res) => {
   try {
     const userId = req.user._id;
     const blogs = await blogModel.find({createdBy : {$ne : userId}}).populate("createdBy").sort({ createdAt: -1 });
-    res.status(200).json({ status: "success", blogs });
+    res.status(ResponseEnum.SUCCESS.BLOGS.statusCode).json({ ...ResponseEnum.SUCCESS.BLOGS, blogs });
   } catch (error) {
     console.error("Error retrieving allBlogs:", error);
-    res.status(500).json({ message: error.message, status: "error" });
+    res.status(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR.statusCode).json(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR);
   }
 };
 
@@ -71,10 +49,10 @@ const myBlogs = async (req, res) => {
   try {
     const userId = req.user._id;
     const blogs = await blogModel.find({createdBy:userId}).populate("createdBy").sort({ createdAt: -1 });
-    res.status(200).json({ status: "success", blogs });
+    res.status(ResponseEnum.SUCCESS.BLOGS.statusCode).json({ ...ResponseEnum.SUCCESS.BLOGS, blogs });
   } catch (error) {
     console.error("Error retrieving myBlogs:", error);
-    res.status(500).json({ message: error.message, status: "error" });
+    res.status(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR.statusCode).json(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR);
   }
 };
 
@@ -88,43 +66,25 @@ const updateBlog = async (req, res) => {
     const existingBlog = await blogModel.findById(blogId);
 
     if (!existingBlog) {
-      return res.status(404).json({
-        status: "error",
-        message: "Blog not found",
-      });
+      return res.status(ResponseEnum.ERROR.BLOG_NOT_FOUND.statusCode).json(ResponseEnum.ERROR.BLOG_NOT_FOUND);
     }
 
     // Check if the user is the owner of the blog
     if (existingBlog.createdBy.toString() !== userId.toString()) {
-      return res.status(403).json({
-        status: "error",
-        message: "You are not authorized to update this blog",
-      });
+      return res.status(ResponseEnum.ERROR.INVALID_AUTHORIZATION.statusCode).json(
+        ResponseEnum.ERROR.INVALID_AUTHORIZATION
+      );
     }
 
    
     if (req.file) {
-      const uniqueFilename = uuidv4() + path.extname(req.file.originalname);
-      const params = {
-        Bucket: bucketName,
-        Key: uniqueFilename,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-      };
-
-      const command = new PutObjectCommand(params);
-      await s3.send(command);
-      imageUrl = `https://${bucketName}.s3.${bucketRegion}.amazonaws.com/${uniqueFilename}`;
+      const uniqueFilename = createFilename(req.file.originalname) 
+      imageUrl = await addToS3(uniqueFilename,req.file.buffer,req.file.mimetype)
 
       // Delete the old image
       if (existingBlog.image) {
         const oldImageKey = existingBlog.image.split('/').pop();
-        const deleteParams = {
-          Bucket: bucketName,
-          Key: oldImageKey,
-        };
-        const deleteCommand = new DeleteObjectCommand(deleteParams);
-        await s3.send(deleteCommand);
+        await deleteFromS3(oldImageKey)
       }
     }
 
@@ -139,14 +99,13 @@ const updateBlog = async (req, res) => {
       { new: true }
     );
 
-    res.status(200).json({
-      status: "success",
-      message: "Blog updated successfully",
+    res.status(ResponseEnum.SUCCESS.BLOG_UPDATED.statusCode).json({
+      ...ResponseEnum.SUCCESS.BLOG_UPDATED,
       blog: updatedBlog,
     });
   } catch (error) {
     console.error("Error updating blog:", error);
-    res.status(500).json({ message: error.message, status: "error" });
+    res.status(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR.statusCode).json(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR);
   }
 };
 
@@ -160,42 +119,34 @@ const deleteBlog = async (req, res) => {
     const existingBlog = await blogModel.findById(blogId);
 
     if (!existingBlog) {
-      return res.status(404).json({
-        status: "error",
-        message: "Blog not found",
-      });
+      return res.status(ResponseEnum.ERROR.BLOG_NOT_FOUND.statusCode).json(
+        ResponseEnum.ERROR.BLOG_NOT_FOUND
+      );
     }
 
     // Check if the user is the owner of the blog
     if (existingBlog.createdBy.toString() !== userId.toString()) {
-      return res.status(403).json({
-        status: "error",
-        message: "You are not authorized to delete this blog",
-      });
+      return res.status(ResponseEnum.ERROR.INVALID_AUTHORIZATION.statusCode).json(
+        ResponseEnum.ERROR.INVALID_AUTHORIZATION
+      );
     }
 
     // Delete the image from S3
     if (existingBlog.image) {
       const imageKey = existingBlog.image.split('/').pop();
-      const deleteParams = {
-        Bucket: bucketName,
-        Key: imageKey,
-      };
-      const deleteCommand = new DeleteObjectCommand(deleteParams);
-      await s3.send(deleteCommand);
+      await deleteFromS3(imageKey)
     }
 
     // Delete the blog from the database
     await blogModel.findByIdAndDelete(blogId);
 
-    res.status(200).json({
-      status: "success",
-      message: "Blog deleted successfully",
+    res.status(ResponseEnum.SUCCESS.BLOG_DELETED.statusCode).json({
+      ...ResponseEnum.SUCCESS.BLOG_DELETED,
       blog:existingBlog
     });
   } catch (error) {
     console.error("Error deleting blog:", error);
-    res.status(500).json({ message: error.message, status: "error" });
+    res.status(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR.statusCode).json(ResponseEnum.ERROR.INTERNAL_SERVER_ERROR);
   }
 };
 
